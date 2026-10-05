@@ -11,7 +11,7 @@ from sglang.srt.managers.scheduler import Scheduler
 from sglang.srt.runtime_context import get_context, get_parallel
 from sglang.srt.server_args import compute_world_size
 
-register_cpu_ci(est_time=12, suite="base-a-test-cpu")
+register_cpu_ci(est_time=8, suite="base-a-test-cpu")
 
 
 def _shape(*, tp_size: int, pp_size: int, dp_size: int) -> dict:
