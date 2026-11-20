@@ -13,6 +13,7 @@
 # ==============================================================================
 """A controller that dispatches requests to multiple data parallel workers."""
 
+import os
 import faulthandler
 import logging
 import multiprocessing as mp
@@ -366,10 +367,29 @@ class DataParallelController:
         req.time_stats = wrap_as_pickle(time_stats)
         if is_health_check:
             self.dispatch_health_check(req)
-        else:
+        elif not self._sticky_routing_key_dispatch(req):
             self.dispatching(req)
         req.time_stats = time_stats
         req.time_stats.set_dp_dispatch_finish_time()
+
+    def _sticky_routing_key_dispatch(self, req) -> bool:
+        # BENCH-ONLY (SGLANG_DP_STICKY_ROUTING_KEY=1): pin each routing key to one DP rank
+        # (new keys go to the rank with the fewest pinned keys) so a session's prefix cache stays local.
+        key = getattr(req, "routing_key", None)
+        if not key or os.environ.get("SGLANG_DP_STICKY_ROUTING_KEY") != "1":
+            return False
+        if not hasattr(self, "_sticky_pins"):
+            self._sticky_pins, self._sticky_counts = {}, {}
+        rank = self._sticky_pins.get(key)
+        if rank is None:
+            active = self._active_workers
+            rank = min(active, key=lambda r: (self._sticky_counts.get(r, 0), r))
+            self._sticky_pins[key] = rank
+            self._sticky_counts[rank] = self._sticky_counts.get(rank, 0) + 1
+            if len(self._sticky_pins) % 50 == 1:
+                logger.info(f"Sticky DP routing: {len(self._sticky_pins)} keys, pins per rank {self._sticky_counts}")
+        sock_send(self.workers[rank], req)
+        return True
 
     def dispatch_batch_generate(self, batch_req: BatchTokenizedGenerateReqInput):
         has_user_request = any(
