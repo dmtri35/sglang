@@ -261,7 +261,9 @@ class OpenAIServingBase(ABC):
     def extract_routing_key(self, raw_request):
         if raw_request is None:
             return None
-        return raw_request.headers.get(ROUTING_KEY_HEADER)
+        return raw_request.headers.get(ROUTING_KEY_HEADER) or raw_request.headers.get(
+            "x-smg-routing-key"
+        )  # BENCH-ONLY: AgentX client sends X-SMG-Routing-Key
 
     def extract_routed_dp_rank_from_header(
         self, raw_request: Request, body_routed_dp_rank: Optional[int] = None

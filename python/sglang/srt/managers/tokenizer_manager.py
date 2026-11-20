@@ -1866,7 +1866,10 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
             bootstrap_room = obj.bootstrap_room
             if (
                 bootstrap_room is None
-                and get_disagg().disaggregation_transfer_backend == "fake"
+                and (
+                    get_disagg().disaggregation_transfer_backend == "fake"
+                    or obj.bootstrap_host == "2.2.2.2"  # BENCH-ONLY: fake-host client
+                )
             ):
                 bootstrap_room = self.fake_bootstrap_room_counter
                 self.fake_bootstrap_room_counter += 1

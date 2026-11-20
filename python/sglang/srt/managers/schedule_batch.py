@@ -47,6 +47,7 @@ ScheduleBatch -> ForwardBatch
   It is constructed directly from a ScheduleBatch by `ForwardBatch.init_new`.
 """
 
+import os
 import copy
 import dataclasses
 import logging
@@ -825,7 +826,10 @@ class Req(ReqDllmMixin):
         self.linker_offload_skip_prefix_len = 0
         # Override embeds give KV that the token ids alone do not determine.
         self.skip_radix_cache_insert = (
-            bootstrap_host == FAKE_BOOTSTRAP_HOST
+            (
+                bootstrap_host == FAKE_BOOTSTRAP_HOST
+                and os.environ.get("SGLANG_FAKE_HOST_KEEP_CACHE") != "1"  # BENCH-ONLY
+            )
             or positional_embed_overrides is not None
         )
         # Set when the request's in-flight forward ran on KV that never landed:
