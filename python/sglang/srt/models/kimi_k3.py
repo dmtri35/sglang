@@ -174,6 +174,7 @@ if TYPE_CHECKING:
     from sglang.kernels.ops.gemm.cutedsl_bf16_gemm import TGVMRanges
 
 logger = logging.getLogger(__name__)
+_SHARED_STREAM_ORDERED_FREE = envs.SGLANG_K3_SHARED_STREAM_ORDERED_FREE.get()
 
 # `experts.<expert_id>.<w1|w2|w3>.` fragment of a checkpoint tensor name, the
 # key FusedMoE.make_expert_params_mapping entries match on.
@@ -1402,6 +1403,9 @@ class KimiK3MoE(KimiK3MoEHipMixin, nn.Module):
         shared_output = None
         shared_event = None
         shared_compute_event = None
+        # Under the ordered free, the side stream's shared output (owned by alt_stream) is held here until every
+        # current-stream consumer is enqueued; see release_shared_output.
+        shared_alt_output = None
 
         def issue_shared():
             nonlocal shared_input, shared_output, shared_event
@@ -1433,7 +1437,12 @@ class KimiK3MoE(KimiK3MoEHipMixin, nn.Module):
                     shared_input = self._shared_experts_tp.gather(
                         hidden_states, forward_batch
                     )
-                shared_input.record_stream(self.alt_stream)
+                # record_stream defers a free until the GPU reaches it, so with the
+                # host many layers ahead every layer's shared input and output stay
+                # reserved. Instead this forward holds both until the current stream
+                # has joined the side stream, which orders the frees on the current stream.
+                if not _SHARED_STREAM_ORDERED_FREE:
+                    shared_input.record_stream(self.alt_stream)
                 self.alt_stream.wait_stream(current_stream)
                 with torch.cuda.stream(self.alt_stream):
                     shared_output = self.shared_experts(shared_input)
@@ -1490,18 +1499,34 @@ class KimiK3MoE(KimiK3MoEHipMixin, nn.Module):
                 pre_handle.remove()
 
         def wait_and_finalize_shared_experts():
-            nonlocal shared_output
+            nonlocal shared_output, shared_alt_output
             if shared_event is None:
                 return
             # Join just before consuming the shared result. The legacy path
             # still needs to reduce-scatter its TP-partial MLP output here.
             current_stream = torch.cuda.current_stream()
             current_stream.wait_event(shared_event)
-            shared_output.record_stream(current_stream)
+            if not _SHARED_STREAM_ORDERED_FREE:
+                shared_output.record_stream(current_stream)
+            else:
+                shared_alt_output = shared_output
             if self._shared_experts_tp is not None and not fine_grained_overlap:
                 shared_output = self._shared_experts_tp.reduce_scatter(
                     shared_output, hidden_states, forward_batch
                 )
+                if shared_output is not shared_alt_output:
+                    # The reduce-scatter was the alt-owned output's last reader.
+                    release_shared_output()
+
+        def release_shared_output():
+            # The caching allocator may unmap a free block (expandable segments: empty_cache, or the retry after a
+            # failed allocation) after synchronizing only the block's own stream. Once the reference below drops,
+            # the alt-owned output is free while its current-stream readers may still be queued, so first make
+            # alt_stream wait for them: syncing alt_stream then covers those reads.
+            nonlocal shared_alt_output
+            if shared_alt_output is not None:
+                self.alt_stream.wait_stream(torch.cuda.current_stream())
+                shared_alt_output = None
 
         # Give the NPU shared-expert branch a head start. At this point
         # hidden_states is the decoder layer's post-attention RMSNorm output.
@@ -1533,6 +1558,7 @@ class KimiK3MoE(KimiK3MoEHipMixin, nn.Module):
             wait_and_finalize_shared_experts()
             if shared_output is not None:
                 expert_output = expert_output + shared_output
+            release_shared_output()
             return expert_output
 
         # Latent MoE: compress after routing, before experts
@@ -1571,7 +1597,10 @@ class KimiK3MoE(KimiK3MoEHipMixin, nn.Module):
                 and self._shared_experts_tp is None
             ):
                 shared_output = self._reduce_shared(shared_output)
+                if shared_output is not shared_alt_output:
+                    release_shared_output()
             out = _add3(out, shared_output, prefix_sum)
+            release_shared_output()
             return out
         out = out if prefix_sum is None else out + prefix_sum
         return out

@@ -2587,6 +2587,10 @@ class Envs:
     # and the latent up_proj tail above the fused-GEMV range (k3_ar_fusion
     # gemm_ag_up_fits). Online weight updates are rejected while on.
     SGLANG_K3_SHARDED_MOE = EnvBool(True)
+    # K3 shared-expert overlap: order the side stream's input/output frees on the current
+    # stream (held until the join) instead of record_stream, which keeps them reserved
+    # until the GPU catches up with the host. 0 restores record_stream.
+    SGLANG_K3_SHARED_STREAM_ORDERED_FREE = EnvBool(True)
     # Use the ROCm radix-4 router for covered K3 top-k workloads.
     SGLANG_K3_RADIX4_TOPK = EnvBool(False)
     SGLANG_KIMI_K3_VIT_CUDA_GRAPH_CACHE_CAPACITY = EnvInt(2)
