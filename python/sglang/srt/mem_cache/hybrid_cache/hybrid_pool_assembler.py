@@ -220,6 +220,20 @@ def build_kv_host_pool(
     return host_pool
 
 
+def _split_hicache_size_with_mamba(
+    hicache_size: int, mamba_size_gb: int, kv_pools: tuple[Any, ...], mamba_pool: Any
+) -> tuple[float, ...]:
+    """Host sizes for ``kv_pools`` then ``mamba_pool``: the Mamba share is either fixed
+    (``mamba_size_gb``, with the KV pools splitting the rest by device size) or, at 0,
+    proportional to device pool size like every other pool."""
+    if mamba_size_gb > 0:
+        return (
+            *_split_hicache_size(hicache_size - mamba_size_gb, kv_pools),
+            mamba_size_gb,
+        )
+    return _split_hicache_size(hicache_size, (*kv_pools, mamba_pool))
+
+
 def _split_hicache_size(
     hicache_size: int, kv_pools: tuple[Any, ...]
 ) -> tuple[float, ...]:
@@ -1221,8 +1235,11 @@ def build_hybrid_mamba_stack(
     kv_pool = config.root
     kv_host_size, mamba_host_size = None, 0
     if get_memory().hicache_size > 0:
-        kv_host_size, mamba_host_size = _split_hicache_size(
-            get_memory().hicache_size, (kv_pool, mamba_pool)
+        kv_host_size, mamba_host_size = _split_hicache_size_with_mamba(
+            get_memory().hicache_size,
+            get_memory().hicache_mamba_size_gb,
+            (kv_pool,),
+            mamba_pool,
         )
     index_bytes = _kv_budget_index_bytes(config)
     if index_bytes and kv_host_size is not None:
@@ -1294,8 +1311,11 @@ def build_hybrid_mamba_swa_stack(
     swa_attn_allocator = params.token_to_kv_pool_allocator.swa_attn_allocator
     kv_host_size, swa_host_size, mamba_host_size = None, None, 0
     if get_memory().hicache_size > 0:
-        kv_host_size, swa_host_size, mamba_host_size = _split_hicache_size(
-            get_memory().hicache_size, (full_kv_pool, swa_kv_pool, mamba_pool)
+        kv_host_size, swa_host_size, mamba_host_size = _split_hicache_size_with_mamba(
+            get_memory().hicache_size,
+            get_memory().hicache_mamba_size_gb,
+            (full_kv_pool, swa_kv_pool),
+            mamba_pool,
         )
     host_pool_group = build_hybrid_swa_group(
         page_size=params.page_size,

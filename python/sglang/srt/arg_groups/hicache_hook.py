@@ -35,6 +35,18 @@ def handle_hicache(server_args: Any):
         UnifiedCacheLinkerConfig.from_dict(
             backend_config if config is not None else None
         )
+    if cfg.hicache_mamba_size_gb < 0:
+        raise ValueError("--hicache-mamba-size-gb must be nonnegative.")
+    if cfg.hicache_mamba_size_gb and (
+        not cfg.enable_hierarchical_cache
+        or not cfg.uses_mamba_radix_cache
+        or cfg.hicache_host_memory_mode != "cache"
+        or cfg.hicache_mamba_size_gb >= cfg.hicache_size
+    ):
+        raise ValueError(
+            "--hicache-mamba-size-gb requires a hybrid Mamba model, HiCache cache mode, "
+            "and a larger --hicache-size total budget."
+        )
     if cfg.enable_linker_mla_dedup and (
         not cfg.enable_unified_cache_external_linker
         or cfg.unified_cache_external_linker_backend != "mooncake"
